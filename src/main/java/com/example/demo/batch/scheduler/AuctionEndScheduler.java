@@ -31,7 +31,8 @@ public class AuctionEndScheduler {
             log.info("========== 경매 종료 배치 스케줄 시작: {} ==========", LocalDateTime.now());
 
             JobParameters jobParameters = new JobParametersBuilder()
-                    .addLocalDateTime("executionTime", LocalDateTime.now())
+                    .addString("currentTime", LocalDateTime.now().toString()) // Reader에서 LocalDateTime.parse()를 사용하기 위해 String으로 전달
+                    .addLocalDateTime("executionTime", LocalDateTime.now()) // Job 재실행 방지용 유니크 키
                     .toJobParameters();
 
             jobLauncher.run(auctionEndJob, jobParameters);
