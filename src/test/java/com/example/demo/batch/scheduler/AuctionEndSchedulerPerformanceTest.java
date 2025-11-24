@@ -97,20 +97,8 @@ class AuctionEndSchedulerPerformanceTest {
         long startTime = System.currentTimeMillis();
         memoryMonitor.start();
 
-        // 배치 실행 전 커넥션 정보
-        int initialTotalConnections = poolMXBean != null ? poolMXBean.getTotalConnections() : 0;
-        int initialActiveConnections = poolMXBean != null ? poolMXBean.getActiveConnections() : 0;
-        int initialIdleConnections = poolMXBean != null ? poolMXBean.getIdleConnections() : 0;
-        int initialThreadsAwaiting = poolMXBean != null ? poolMXBean.getThreadsAwaitingConnection() : 0;
-
         // When
         JobExecution jobExecution = jobLauncher.run(auctionEndJob, jobParameters);
-
-        // 배치 실행 후 커넥션 정보
-        int finalTotalConnections = poolMXBean != null ? poolMXBean.getTotalConnections() : 0;
-        int finalActiveConnections = poolMXBean != null ? poolMXBean.getActiveConnections() : 0;
-        int finalIdleConnections = poolMXBean != null ? poolMXBean.getIdleConnections() : 0;
-        int finalThreadsAwaiting = poolMXBean != null ? poolMXBean.getThreadsAwaitingConnection() : 0;
 
         memoryMonitor.interrupt();
         memoryMonitor.join(1000);

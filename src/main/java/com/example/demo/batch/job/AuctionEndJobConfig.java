@@ -14,13 +14,15 @@ import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.database.JdbcBatchItemWriter;
-import org.springframework.batch.item.database.JpaPagingItemReader;
+import org.springframework.batch.item.database.JdbcPagingItemReader;
 import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
+import org.springframework.batch.item.database.builder.JdbcPagingItemReaderBuilder;
+import org.springframework.batch.item.database.support.SqlPagingQueryProviderFactoryBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.transaction.PlatformTransactionManager;
 
 @Slf4j
@@ -36,7 +38,7 @@ public class AuctionEndJobConfig {
     private static final int CHUNK_SIZE = 1000;
 
     @Bean
-    public Job auctionEndJob() {
+    public Job auctionEndJob() throws Exception {
         log.info("========== 경매 종료 Job 설정 ==========");
         return new JobBuilder("auctionEndJob", jobRepository)
                 .start(auctionEndStep())
@@ -45,11 +47,11 @@ public class AuctionEndJobConfig {
     }
 
     @Bean
-    public Step auctionEndStep() {
+    public Step auctionEndStep() throws Exception {
         log.info("========== 경매 종료 Step 설정 ==========");
         return new StepBuilder("auctionEndStep", jobRepository)
                 .<AuctionEndDto, AuctionEndDto>chunk(CHUNK_SIZE, transactionManager)
-                .reader(expiredAuctionReader(null))
+                .reader(expiredAuctionJdbcReader(null))
                 .writer(auctionWriter())
                 .build();
     }
@@ -57,31 +59,29 @@ public class AuctionEndJobConfig {
 
     @Bean
     @StepScope
-    public JpaPagingItemReader<AuctionEndDto> expiredAuctionReader(
-            @Value("#{jobParameters['currentTime']}") String currentTime) {
-        log.info("========== Reader 설정: 만료된 경매 조회 (DTO Projection) ==========");
+    public JdbcPagingItemReader<AuctionEndDto> expiredAuctionJdbcReader(
+            @Value("#{jobParameters['currentTime']}") String currentTime) throws Exception {
 
-        JpaPagingItemReader<AuctionEndDto> reader = new JpaPagingItemReader<>() {
-            @Override
-            public int getPage() {
-                return 0;  // 항상 첫 번째 페이지 읽기
-            }
-        };
+        log.info("========== Reader 설정: 만료된 경매 조회 (JDBC Paging) ==========");
 
-        reader.setName("expiredAuctionReader");
-        reader.setEntityManagerFactory(entityManagerFactory);
-        reader.setPageSize(CHUNK_SIZE);
-        reader.setQueryString("SELECT new com.example.demo.dto.AuctionEndDto(a.id) " +
-                "FROM Auction a " +
-                "WHERE a.status = :status " +
-                "AND a.endTime <= :currentTime " +
-                "ORDER BY a.id ASC");
-        reader.setParameterValues(Map.of(
-                "status", AuctionStatus.ACTIVE,
-                "currentTime", LocalDateTime.parse(currentTime)
-        ));
+        SqlPagingQueryProviderFactoryBean queryProvider = new SqlPagingQueryProviderFactoryBean();
+        queryProvider.setDataSource(dataSource);
+        queryProvider.setSelectClause("a.id");
+        queryProvider.setFromClause("from auctions a");
+        queryProvider.setWhereClause("where a.status = :status AND a.end_time <= :currentTime");
+        queryProvider.setSortKey("id");
 
-        return reader;
+        return new JdbcPagingItemReaderBuilder<AuctionEndDto>()
+                .name("expiredAuctionJdbcReader")
+                .pageSize(CHUNK_SIZE)
+                .dataSource(dataSource)
+                .rowMapper(new BeanPropertyRowMapper<>(AuctionEndDto.class)) // DTO 필드(id)에 맞춰 자동 매핑
+                .queryProvider(queryProvider.getObject())
+                .parameterValues(Map.of(
+                        "status", AuctionStatus.ACTIVE.name(),
+                        "currentTime", LocalDateTime.parse(currentTime)
+                ))
+                .build();
     }
 
     @Bean
