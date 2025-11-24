@@ -1,6 +1,8 @@
 package com.example.demo.batch.scheduler;
 
 import com.example.demo.entity.AuctionStatus;
+import com.zaxxer.hikari.HikariDataSource;
+import com.zaxxer.hikari.HikariPoolMXBean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -13,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,10 +34,16 @@ class AuctionEndSchedulerPerformanceTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private DataSource dataSource;
+
     private Runtime runtime;
+    private HikariPoolMXBean poolMXBean;
 
     @BeforeEach
     void setUp() {
+        // 데이터 삽입 속도 때문에 SQL 직접 실행으로, SQL문 위치: resources/test-dat/data.sql
+
         // 배치 메타데이터 초기화 (이전 테스트 기록 삭제)
         jdbcTemplate.execute("DELETE FROM BATCH_STEP_EXECUTION_CONTEXT");
         jdbcTemplate.execute("DELETE FROM BATCH_STEP_EXECUTION");
@@ -44,6 +53,11 @@ class AuctionEndSchedulerPerformanceTest {
         jdbcTemplate.execute("DELETE FROM BATCH_JOB_INSTANCE");
 
         runtime = Runtime.getRuntime();
+
+        // HikariCP 커넥션 풀 정보 초기화
+        if (dataSource instanceof HikariDataSource) {
+            poolMXBean = ((HikariDataSource) dataSource).getHikariPoolMXBean();
+        }
     }
 
 
@@ -83,8 +97,20 @@ class AuctionEndSchedulerPerformanceTest {
         long startTime = System.currentTimeMillis();
         memoryMonitor.start();
 
+        // 배치 실행 전 커넥션 정보
+        int initialTotalConnections = poolMXBean != null ? poolMXBean.getTotalConnections() : 0;
+        int initialActiveConnections = poolMXBean != null ? poolMXBean.getActiveConnections() : 0;
+        int initialIdleConnections = poolMXBean != null ? poolMXBean.getIdleConnections() : 0;
+        int initialThreadsAwaiting = poolMXBean != null ? poolMXBean.getThreadsAwaitingConnection() : 0;
+
         // When
         JobExecution jobExecution = jobLauncher.run(auctionEndJob, jobParameters);
+
+        // 배치 실행 후 커넥션 정보
+        int finalTotalConnections = poolMXBean != null ? poolMXBean.getTotalConnections() : 0;
+        int finalActiveConnections = poolMXBean != null ? poolMXBean.getActiveConnections() : 0;
+        int finalIdleConnections = poolMXBean != null ? poolMXBean.getIdleConnections() : 0;
+        int finalThreadsAwaiting = poolMXBean != null ? poolMXBean.getThreadsAwaitingConnection() : 0;
 
         memoryMonitor.interrupt();
         memoryMonitor.join(1000);
@@ -124,7 +150,7 @@ class AuctionEndSchedulerPerformanceTest {
         System.out.println("  - 처리량: " + String.format("%.2f", processedCount / executionTimeSec) + " 건/초");
         System.out.println("  - 건당 처리 시간: " + String.format("%.4f", executionTimeMs / (double) processedCount) + " ms");
         System.out.println("  - 1만건당 처리 시간: " + String.format("%.2f", (executionTimeMs / (double) processedCount) * 10000) + " ms");
-        System.out.println("===================================================");
+        System.out.println("-------------------------------------------");
 
         // 검증
         assertThat(jobExecution.getStatus().isUnsuccessful()).isFalse();
