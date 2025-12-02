@@ -24,75 +24,87 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
 public class AuctionEndJobConfig {
 
-    private final JobRepository jobRepository;
-    private final PlatformTransactionManager transactionManager;
-    private final EntityManagerFactory entityManagerFactory;
-    private final DataSource dataSource;
+        private final JobRepository jobRepository;
+        private final PlatformTransactionManager transactionManager;
+        private final EntityManagerFactory entityManagerFactory;
+        private final DataSource dataSource;
 
-    private static final int CHUNK_SIZE = 1000;
+        private static final int CHUNK_SIZE = 1000;
 
-    @Bean
-    public Job auctionEndJob() throws Exception {
-        log.info("========== 경매 종료 Job 설정 ==========");
-        return new JobBuilder("auctionEndJob", jobRepository)
-                .start(auctionEndStep())
-                .preventRestart()
-                .build();
-    }
+        @Bean
+        public Job auctionEndJob() throws Exception {
+                log.info("========== 경매 종료 Job 설정 ==========");
+                return new JobBuilder("auctionEndJob", jobRepository)
+                                .start(auctionEndStep())
+                                .preventRestart()
+                                .build();
+        }
 
-    @Bean
-    public Step auctionEndStep() throws Exception {
-        log.info("========== 경매 종료 Step 설정 ==========");
-        return new StepBuilder("auctionEndStep", jobRepository)
-                .<AuctionEndDto, AuctionEndDto>chunk(CHUNK_SIZE, transactionManager)
-                .reader(expiredAuctionJdbcReader(null))
-                .writer(auctionWriter())
-                .build();
-    }
+        @Bean
+        public Step auctionEndStep() throws Exception {
+                log.info("========== 경매 종료 Step 설정 ==========");
+                return new StepBuilder("auctionEndStep", jobRepository)
+                                .<AuctionEndDto, AuctionEndDto>chunk(CHUNK_SIZE, transactionManager)
+                                .reader(expiredAuctionJdbcReader(null))
+                                .writer(auctionWriter())
+                                .taskExecutor(auctionEndJobTaskExecutor())
+                                .build();
+        }
 
+        @Bean
+        @StepScope
+        public JdbcPagingItemReader<AuctionEndDto> expiredAuctionJdbcReader(
+                        @Value("#{jobParameters['currentTime']}") String currentTime) throws Exception {
 
-    @Bean
-    @StepScope
-    public JdbcPagingItemReader<AuctionEndDto> expiredAuctionJdbcReader(
-            @Value("#{jobParameters['currentTime']}") String currentTime) throws Exception {
+                log.info("========== Reader 설정: 만료된 경매 조회 (JDBC Paging) ==========");
 
-        log.info("========== Reader 설정: 만료된 경매 조회 (JDBC Paging) ==========");
+                SqlPagingQueryProviderFactoryBean queryProvider = new SqlPagingQueryProviderFactoryBean();
+                queryProvider.setDataSource(dataSource);
+                queryProvider.setSelectClause("a.id");
+                queryProvider.setFromClause("from auctions a");
+                queryProvider.setWhereClause("where a.status = :status AND a.end_time <= :currentTime");
+                queryProvider.setSortKey("id");
 
-        SqlPagingQueryProviderFactoryBean queryProvider = new SqlPagingQueryProviderFactoryBean();
-        queryProvider.setDataSource(dataSource);
-        queryProvider.setSelectClause("a.id");
-        queryProvider.setFromClause("from auctions a");
-        queryProvider.setWhereClause("where a.status = :status AND a.end_time <= :currentTime");
-        queryProvider.setSortKey("id");
+                return new JdbcPagingItemReaderBuilder<AuctionEndDto>()
+                                .name("expiredAuctionJdbcReader")
+                                .pageSize(CHUNK_SIZE)
+                                .dataSource(dataSource)
+                                .rowMapper(new BeanPropertyRowMapper<>(AuctionEndDto.class)) // DTO 필드(id)에 맞춰 자동 매핑
+                                .queryProvider(queryProvider.getObject())
+                                .parameterValues(Map.of(
+                                                "status", AuctionStatus.ACTIVE.name(),
+                                                "currentTime", LocalDateTime.parse(currentTime)))
+                                .saveState(false)
+                                .build();
+        }
 
-        return new JdbcPagingItemReaderBuilder<AuctionEndDto>()
-                .name("expiredAuctionJdbcReader")
-                .pageSize(CHUNK_SIZE)
-                .dataSource(dataSource)
-                .rowMapper(new BeanPropertyRowMapper<>(AuctionEndDto.class)) // DTO 필드(id)에 맞춰 자동 매핑
-                .queryProvider(queryProvider.getObject())
-                .parameterValues(Map.of(
-                        "status", AuctionStatus.ACTIVE.name(),
-                        "currentTime", LocalDateTime.parse(currentTime)
-                ))
-                .build();
-    }
+        @Bean
+        public TaskExecutor auctionEndJobTaskExecutor() {
+                ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+                executor.setCorePoolSize(4);
+                executor.setMaxPoolSize(4);
+                executor.setThreadNamePrefix("auction-end-thread-");
+                executor.initialize();
+                return executor;
+        }
 
-    @Bean
-    @StepScope
-    public JdbcBatchItemWriter<AuctionEndDto> auctionWriter() {
-        log.info("========== Writer 설정: JDBC 배치 업데이트 ==========");
+        @Bean
+        @StepScope
+        public JdbcBatchItemWriter<AuctionEndDto> auctionWriter() {
+                log.info("========== Writer 설정: JDBC 배치 업데이트 ==========");
 
-        return new JdbcBatchItemWriterBuilder<AuctionEndDto>()
-                .dataSource(dataSource)
-                .sql("UPDATE auctions SET status = 'ENDED' WHERE id = :id")
-                .beanMapped()
-                .build();
-    }
+                return new JdbcBatchItemWriterBuilder<AuctionEndDto>()
+                                .dataSource(dataSource)
+                                .sql("UPDATE auctions SET status = 'ENDED' WHERE id = :id")
+                                .beanMapped()
+                                .build();
+        }
 }
